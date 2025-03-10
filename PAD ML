@@ -1,0 +1,160 @@
+import os
+import shutil
+import random
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras import layers, models
+import matplotlib.pyplot as plt
+
+# Set random seed for reproducibility
+random.seed(42)
+
+# Define dataset directory
+DATA_DIR = "dataset"
+TRAIN_DIR = os.path.join(DATA_DIR, "train")
+VAL_DIR = os.path.join(DATA_DIR, "val")
+TEST_DIR = os.path.join(DATA_DIR, "test")
+
+# Automatically detect class names based on folder structure
+try:
+    class_names = [d for d in os.listdir(DATA_DIR) if os.path.isdir(os.path.join(DATA_DIR, d))]
+    if not class_names:
+        raise ValueError("No class folders found in dataset directory!")
+except Exception as e:
+    print(f"Error reading dataset directory: {e}")
+    exit(1)
+
+print(f"Detected classes: {class_names}")
+
+
+# Ensure dataset is split into train, val, and test
+def split_data(source, train_dest, val_dest, test_dest, train_size=0.8, val_size=0.1):
+    """Splits dataset into training, validation, and test sets."""
+    try:
+        files = [f for f in os.listdir(source) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]  # Filter image files
+        if not files:
+            print(f"Warning: No images found in {source}. Skipping...")
+            return
+
+        random.shuffle(files)
+
+        train_split = int(len(files) * train_size)
+        val_split = int(len(files) * (train_size + val_size))
+
+        print(f"Processing {source}:")
+        print(f"  Total files: {len(files)}")
+        print(f"  → Training: {train_split} images")
+        print(f"  → Validation: {val_split - train_split} images")
+        print(f"  → Testing: {len(files) - val_split} images")
+
+        for i, file in enumerate(files):
+            src_file = os.path.join(source, file)
+            if i < train_split:
+                shutil.copy(src_file, os.path.join(train_dest, file))
+            elif i < val_split:
+                shutil.copy(src_file, os.path.join(val_dest, file))
+            else:
+                shutil.copy(src_file, os.path.join(test_dest, file))
+    except Exception as e:
+        print(f"Error processing {source}: {e}")
+
+
+# Create directories if they don't exist
+for category in class_names:
+    os.makedirs(os.path.join(TRAIN_DIR, category), exist_ok=True)
+    os.makedirs(os.path.join(VAL_DIR, category), exist_ok=True)
+    os.makedirs(os.path.join(TEST_DIR, category), exist_ok=True)
+
+    source_dir = os.path.join(DATA_DIR, category)
+    split_data(source_dir, os.path.join(TRAIN_DIR, category), os.path.join(VAL_DIR, category),
+               os.path.join(TEST_DIR, category))
+
+IMG_SIZE = (224, 224)  # Standard image size for CNN
+BATCH_SIZE = 32
+
+# Image augmentation and rescaling
+datagen = ImageDataGenerator(
+    rescale=1. / 255,  # Normalize pixel values
+    rotation_range=15,  # Slight rotation for augmentation
+    horizontal_flip=True,  # Flip images to improve learning
+    validation_split=0.1  # 10% validation split
+)
+
+# Load training data
+train_data = datagen.flow_from_directory(
+    TRAIN_DIR,
+    target_size=IMG_SIZE,
+    batch_size=BATCH_SIZE,
+    class_mode='binary',
+    subset='training'
+)
+
+# Load validation data
+val_data = datagen.flow_from_directory(
+    TRAIN_DIR,  # Use training directory with validation split
+    target_size=IMG_SIZE,
+    batch_size=BATCH_SIZE,
+    class_mode='binary',
+    subset='validation'
+)
+
+# Load test data (without augmentation)
+test_datagen = ImageDataGenerator(rescale=1. / 255)
+test_data = test_datagen.flow_from_directory(
+    TEST_DIR,
+    target_size=IMG_SIZE,
+    batch_size=BATCH_SIZE,
+    class_mode='binary'
+)
+
+# Check for empty datasets before proceeding
+if train_data.samples == 0 or val_data.samples == 0 or test_data.samples == 0:
+    raise ValueError("One or more datasets are empty! Check dataset structure and file formats.")
+
+# Build CNN model
+model = models.Sequential([
+    layers.Conv2D(32, (3, 3), activation='relu', input_shape=(224, 224, 3)),
+    layers.MaxPooling2D((2, 2)),
+
+    layers.Conv2D(64, (3, 3), activation='relu'),
+    layers.MaxPooling2D((2, 2)),
+
+    layers.Conv2D(128, (3, 3), activation='relu'),
+    layers.MaxPooling2D((2, 2)),
+
+    layers.Flatten(),
+    layers.Dense(128, activation='relu'),
+    layers.Dropout(0.5),  # Helps prevent overfitting
+    layers.Dense(1, activation='sigmoid')  # Binary output
+])
+
+# Compile the model
+model.compile(optimizer='adam',
+              loss='binary_crossentropy',
+              metrics=['accuracy'])
+
+# Dynamically set epochs based on dataset size
+epoch_count = 15 if train_data.samples > 1000 else 10
+
+# Train the model
+history = model.fit(
+    train_data,
+    validation_data=val_data,
+    epochs=epoch_count
+)
+
+# Evaluate on test set
+test_loss, test_acc = model.evaluate(test_data)
+print(f"Test Accuracy: {test_acc * 100:.2f}%")
+
+# Plot training history
+plt.figure(figsize=(8, 5))
+plt.plot(history.history['accuracy'], label='Train Accuracy', marker='o')
+plt.plot(history.history['val_accuracy'], label='Validation Accuracy', marker='s')
+plt.xlabel('Epochs')
+plt.ylabel('Accuracy')
+plt.legend()
+plt.title('Model Accuracy Over Time')
+plt.grid(True)
+plt.show()
